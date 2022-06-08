@@ -2,6 +2,8 @@ import mysql.connector
 import logging
 import requests
 from decimal import Decimal
+import pandas
+import openpyxl
 
 db_settings = {
     'user': 'root',
@@ -22,6 +24,7 @@ class NBPapi:
         self.api_url = api_url
 
     def request(self, url, **data):
+        """Ułatwia logging requestów."""
         try:
             response = requests.get(url, **data)
         except requests.exceptions.ConnectionError:
@@ -31,12 +34,6 @@ class NBPapi:
             logging.info(f'NBP api error {response.json()}')
             raise Exception(f'NBP api error {response.json()}')
         return response
-
-    def USD__exchange_rate__(self):
-        return requests.get(f'{self.api_url}/exchangerates/rates/c/usd/today/').json()
-
-    def EUR__exchange_rate__(self):
-        return requests.get(f'{self.api_url}/exchangerates/rates/c/eur/today/').json()
 
     def get_rates(self):
         """ Moja zabawa z łatwą możliwośćią rozszerzenia o kolejne waluty."""
@@ -70,13 +67,14 @@ def load_commands():
 
 
 def run_commands(commands):
+    """Komendy z pliku."""
     for command in commands:
         cursor = CONNECTION.cursor()
-        result = cursor.execute(command)
-        print(result)
+        cursor.execute(command)
 
 
-class products:
+class Product:
+    """Klasa produktu. Zmiana nazwy spowoduje zaciąganie innego objektu z bazy. Więc łatwo można inne dodać."""
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
@@ -86,8 +84,9 @@ class products:
         return self.ProductName
 
     @classmethod
-    def get_all_products(cls):
-        raw = "select * from Product"
+    def get_all_objects(cls):
+        """Zaciaga wszystko z bazy."""
+        raw = f"select * from {cls.__name__}"
         cursor = CONNECTION.cursor()
         cursor.execute('use mydb;')
         cursor.execute(raw)
@@ -104,7 +103,7 @@ class products:
 
     @classmethod
     def update_foreign_currency_for_all(cls):
-        products_list = cls.get_all_products()
+        products_list = cls.get_all_objects()
         bank_exchange_rates = BANK_API.get_rates()
         for product in products_list:
             product.UnitPriceEuro = product.UnitPrice * Decimal(bank_exchange_rates['eur']['buy'])
@@ -112,8 +111,16 @@ class products:
         return products_list
 
 
-    def update(self):
+    @classmethod
+    def get_pk_name(cls):
         cursor = CONNECTION.cursor()
+        cursor.execute(f"SHOW KEYS FROM {cls.__name__} WHERE Key_name = 'PRIMARY'")
+        result = cursor.fetchall()
+        return result[0][4]
+
+
+    def update(self):
+        """Pseudo uniwersalny update do klas."""
         command = ''
         for index, (column, value) in enumerate(self.__dict__.items()):
             if index == 0:
@@ -126,11 +133,11 @@ class products:
                     command += f", {column} = '{str(value, 'utf-8')}'"
                 except TypeError:
                     command += f", {column} = '{value}'"
-
-
-        raw = f"Update `mydb`.`Product` SET {command} where `ProductID` = '{self.ProductID}';"
+        raw = f"Update `mydb`.`{self.__class__.__name__}` SET {command} where `{self.get_pk_name()}` = '{self.ProductID}';"
+        logging.info(raw)
+        cursor = CONNECTION.cursor()
         cursor.execute(raw)
-
+        CONNECTION.commit()
 
 
 try:
@@ -140,17 +147,28 @@ except:
     raise Exception('Database connection problem')
 BANK_API = NBPapi('http://api.nbp.pl/api')
 
-products_list = products.update_foreign_currency_for_all()
 
-for product in products_list:
-    product.update()
+clear = '\n' * 100
+while True:
+    choice = 0
 
-# Opcja resetu bazy
-# commands = load_commands()
-# run_commands(commands)
-# print(commands)
-
-if __name__ == '__main__':
-    print('hi')
-
+    print('1. Update cen.')
+    print('2. Export do excela')
+    print('21432. Reset Bazy')
+    try:
+        choice = int(input('Podaj samą liczbe.'))
+    except ValueError:
+        pass
+    print(clear)
+    if choice == 1:
+        products_list = Product.update_foreign_currency_for_all()
+        for product in products_list:
+            product.update()
+        print('Sukces. \n')
+    if choice == 2:
+        df = pandas.DataFrame([o.__dict__ for o in Product.get_all_objects()])
+        df.to_excel("output.xlsx")
+    if choice == 21432: # żeby się komuś przypadkiem nie zresetowało.
+        commands = load_commands()
+        run_commands(commands)
 
